@@ -1,8 +1,6 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 
 function Login({ onLogin, onBack, theme, onToggleTheme }) {
-  const navigate = useNavigate();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -146,7 +144,7 @@ function Login({ onLogin, onBack, theme, onToggleTheme }) {
             >
               <span className="role-icon">👨‍💼</span>
               <span className="role-name">Anuradha</span>
-              <span className="role-title">ICU Manager</span>
+              <span className="role-title">Bed Manager</span>
             </button>
              <button
               onClick={() => quickLogin('erstaff')}
@@ -154,26 +152,9 @@ function Login({ onLogin, onBack, theme, onToggleTheme }) {
             >
               <span className="role-icon">👨‍💼</span>
               <span className="role-name">ER staff</span>
-              <span className="role-title">Emergency Room Staff</span>
+              <span className="role-title">Admissions Staff</span>
             </button>
           </div>
-        </div>
-
-        <div className="cleaning-admin-section">
-          <div className="divider">
-            <span>OR</span>
-          </div>
-          <button
-            type="button"
-            className="cleaning-admin-btn"
-            onClick={() => navigate('/cleaning-admin')}
-          >
-            <span className="cleaning-icon">🧹</span>
-            <div className="cleaning-text">
-              <strong>Cleaning Staff Admin</strong>
-              <span>Manage cleaning operations</span>
-            </div>
-          </button>
         </div>
       </div>
     </div>

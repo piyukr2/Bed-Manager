@@ -35,8 +35,10 @@ router.get('/', async (req, res) => {
     const patients = await patientsQuery;
     
     // Apply role-based filtering
+    // Ward staff can see patients from all wards
+    // ICU managers are restricted to their ward
     let filteredPatients = patients;
-    if (req.user.role === 'icu_manager' || req.user.role === 'ward_staff') {
+    if (req.user.role === 'icu_manager') {
       filteredPatients = patients.filter(p => p.bedId?.ward === req.user.ward);
     } else if (ward && ward !== 'All') {
       filteredPatients = patients.filter(p => p.bedId?.ward === ward);
@@ -57,8 +59,9 @@ router.get('/:id', async (req, res) => {
     }
     
     // Check role-based access
-    if ((req.user.role === 'icu_manager' || req.user.role === 'ward_staff') 
-        && patient.bedId?.ward !== req.user.ward) {
+    // Ward staff can access patients in all wards
+    // ICU managers are restricted to their ward
+    if (req.user.role === 'icu_manager' && patient.bedId?.ward !== req.user.ward) {
       return res.status(403).json({ error: 'Access denied to this ward' });
     }
     
@@ -230,8 +233,9 @@ router.put('/:id/vitals', authorize('admin', 'icu_manager', 'ward_staff'), async
     }
     
     // Check role-based access
-    if ((req.user.role === 'icu_manager' || req.user.role === 'ward_staff') 
-        && patient.bedId?.ward !== req.user.ward) {
+    // Ward staff can update vitals for patients in all wards
+    // ICU managers are restricted to their ward
+    if (req.user.role === 'icu_manager' && patient.bedId?.ward !== req.user.ward) {
       return res.status(403).json({ error: 'Access denied to this ward' });
     }
     
@@ -285,8 +289,9 @@ router.post('/:id/transfer', authorize('admin', 'icu_manager', 'ward_staff'), as
     }
     
     // Check role-based access
-    if ((req.user.role === 'icu_manager' || req.user.role === 'ward_staff') 
-        && patient.bedId?.ward !== req.user.ward) {
+    // Ward staff can transfer patients across all wards
+    // ICU managers are restricted to their ward
+    if (req.user.role === 'icu_manager' && patient.bedId?.ward !== req.user.ward) {
       return res.status(403).json({ error: 'Access denied to this ward' });
     }
     
@@ -349,8 +354,9 @@ router.delete('/:id', authorize('admin', 'icu_manager', 'ward_staff'), async (re
     }
     
     // Check role-based access
-    if ((req.user.role === 'icu_manager' || req.user.role === 'ward_staff') 
-        && patient.bedId?.ward !== req.user.ward) {
+    // Ward staff can discharge patients from all wards
+    // ICU managers are restricted to their ward
+    if (req.user.role === 'icu_manager' && patient.bedId?.ward !== req.user.ward) {
       return res.status(403).json({ error: 'Access denied to this ward' });
     }
     
@@ -407,7 +413,9 @@ router.get('/discharges/upcoming', async (req, res) => {
     .sort({ expectedDischarge: 1 });
     
     // Apply role-based filtering
-    if (req.user.role === 'icu_manager' || req.user.role === 'ward_staff') {
+    // Ward staff can see upcoming discharges from all wards
+    // ICU managers are restricted to their ward
+    if (req.user.role === 'icu_manager') {
       upcomingDischarges = upcomingDischarges.filter(p => p.bedId?.ward === req.user.ward);
     }
     

@@ -22,7 +22,12 @@ const filterBedsByRole = (beds, user) => {
   if (user.role === 'admin') {
     return beds;
   }
-  if (user.role === 'icu_manager' || user.role === 'ward_staff') {
+  // Ward staff can see all beds (they manage all departments)
+  if (user.role === 'ward_staff') {
+    return beds;
+  }
+  // ICU managers only see beds in their ward
+  if (user.role === 'icu_manager') {
     return beds.filter(bed => bed.ward === user.ward);
   }
   return beds;
@@ -35,10 +40,19 @@ router.get('/', async (req, res) => {
     const query = {};
     
     // Apply role-based filtering
+    // Bed Manager (formerly ICU Manager) can now see all wards
+    // Ward staff manages operations across ALL departments - they see all beds
     if (req.user.role === 'icu_manager' || req.user.role === 'ward_staff') {
-      query.ward = req.user.ward;
-    } else if (ward && ward !== 'All') {
-      query.ward = ward;
+      // Bed Manager and Ward staff can see all wards, but can filter by specific ward if requested
+      if (ward && ward !== 'All') {
+        query.ward = ward;
+      }
+      // If ward is 'All' or undefined, show all beds (no ward filter)
+    } else {
+      // For other roles (admin, er_staff, etc.), apply ward filter if specified
+      if (ward && ward !== 'All') {
+        query.ward = ward;
+      }
     }
     
     if (status) query.status = status;
@@ -62,11 +76,13 @@ router.get('/available', async (req, res) => {
     const query = { status: 'available' };
     
     // Apply role-based filtering
-    if (req.user.role === 'icu_manager' || req.user.role === 'ward_staff') {
-      query.ward = req.user.ward;
-    } else if (ward) {
+    // Bed Manager (formerly ICU Manager) and Ward staff can see available beds from all wards
+    if ((req.user.role === 'icu_manager' || req.user.role === 'ward_staff') && ward && ward !== 'All') {
+      query.ward = ward;
+    } else if (req.user.role !== 'icu_manager' && req.user.role !== 'ward_staff' && ward && ward !== 'All') {
       query.ward = ward;
     }
+    // Bed Manager, ward_staff and other roles can see all available beds or filter by ward
     
     if (equipmentType) {
       query.equipmentType = equipmentType;
@@ -108,11 +124,11 @@ router.get('/available', async (req, res) => {
 router.get('/stats', async (req, res) => {
   try {
     let query = {};
-    
+
     // Apply role-based filtering
-    if (req.user.role === 'icu_manager' || req.user.role === 'ward_staff') {
-      query.ward = req.user.ward;
-    }
+    // Bed Manager (formerly ICU Manager) and Ward staff see all beds across all wards
+    // No ward restriction for icu_manager role - they manage all wards
+    // ward_staff and other roles see all beds (no filter)
     
     const totalBeds = await Bed.countDocuments(query);
     const occupied = await Bed.countDocuments({ ...query, status: 'occupied' });
@@ -122,10 +138,9 @@ router.get('/stats', async (req, res) => {
     const maintenance = await Bed.countDocuments({ ...query, status: 'maintenance' });
     
     // Ward-wise statistics
-    const wardStatsQuery = req.user.role === 'icu_manager' || req.user.role === 'ward_staff'
-      ? [{ $match: { ward: req.user.ward } }]
-      : [];
-    
+    // No ward filtering for any role - all roles see all ward stats
+    const wardStatsQuery = [];
+
     const wardStats = await Bed.aggregate([
       ...wardStatsQuery,
       {
@@ -211,8 +226,18 @@ router.get('/stats', async (req, res) => {
       });
     }
     
-    // Save to history
-    await OccupancyHistory.create({
+    // Save to history - Update or create today's entry only
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Start of today
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1); // Start of tomorrow
+
+    // Check if today's entry exists
+    const existingTodayEntry = await OccupancyHistory.findOne({
+      timestamp: { $gte: today, $lt: tomorrow }
+    });
+
+    const historyData = {
       totalBeds,
       occupied,
       available,
@@ -227,8 +252,17 @@ router.get('/stats', async (req, res) => {
         available: w.available,
         occupancyRate: parseFloat(((w.occupied / w.total) * 100).toFixed(1))
       })),
-      peakHour: occupancyRate >= 85
-    });
+      peakHour: occupancyRate >= 85,
+      timestamp: new Date() // Current timestamp for today's entry
+    };
+
+    if (existingTodayEntry) {
+      // Update today's entry
+      await OccupancyHistory.findByIdAndUpdate(existingTodayEntry._id, historyData);
+    } else {
+      // Create new entry for today
+      await OccupancyHistory.create(historyData);
+    }
     
     res.json({
       totalBeds,
@@ -280,10 +314,8 @@ router.get('/:id', async (req, res) => {
     }
     
     // Check role-based access
-    if ((req.user.role === 'icu_manager' || req.user.role === 'ward_staff') 
-        && bed.ward !== req.user.ward) {
-      return res.status(403).json({ error: 'Access denied to this ward' });
-    }
+    // Bed Manager (formerly ICU Manager) and Ward staff can access all wards
+    // No restrictions for these roles
     
     res.json(bed);
   } catch (error) {
@@ -302,22 +334,51 @@ router.put('/:id', authorize('admin', 'icu_manager', 'ward_staff'), async (req, 
     }
     
     // Check role-based access
-    if ((req.user.role === 'icu_manager' || req.user.role === 'ward_staff') 
-        && bed.ward !== req.user.ward) {
-      return res.status(403).json({ error: 'Access denied to this ward' });
-    }
+    // Bed Manager (formerly ICU Manager) and Ward staff can update beds in all wards
+    // No restrictions for these roles
 
     const previousStatus = bed.status;
-    
+
+    // Validate bed state transitions (only when status is provided)
+    if (typeof status !== 'undefined' && status !== previousStatus) {
+      const validTransitions = {
+        available: ['occupied', 'reserved', 'maintenance'],
+        occupied: ['cleaning', 'maintenance'],
+        cleaning: ['available', 'maintenance'],
+        reserved: ['occupied', 'available', 'maintenance'],
+        maintenance: ['available']
+      };
+
+      const allowedNextStates = validTransitions[previousStatus] || [];
+
+      if (!allowedNextStates.includes(status)) {
+        return res.status(400).json({
+          error: `Invalid state transition: Cannot change from '${previousStatus}' to '${status}'. Allowed transitions: ${allowedNextStates.join(', ')}`
+        });
+      }
+    }
+
+    const updateFields = { lastUpdated: Date.now() };
+
+    if (typeof status !== 'undefined') {
+      updateFields.status = status;
+    }
+
+    if (typeof notes !== 'undefined') {
+      updateFields.notes = notes;
+    }
+
+    if (status === 'cleaning') {
+      updateFields.lastCleaned = Date.now();
+    }
+
+    if (status === 'available') {
+      updateFields.patientId = null;
+    }
+
     const updatedBed = await Bed.findByIdAndUpdate(
       req.params.id,
-      { 
-        status, 
-        notes,
-        lastUpdated: Date.now(),
-        ...(status === 'cleaning' && { lastCleaned: Date.now() }),
-        ...(status === 'available' && { patientId: null })
-      },
+      { $set: updateFields },
       { new: true }
     ).populate('patientId');
 
@@ -336,8 +397,8 @@ router.put('/:id', authorize('admin', 'icu_manager', 'ward_staff'), async (req, 
 
       console.log('🧹 Cleaning job created:', cleaningJob._id);
       // Emit socket event for new cleaning job notification
-      console.log('📡 Emitting newCleaningJob event to all clients');
-      req.io.emit('newCleaningJob', cleaningJob);
+      console.log('📡 Emitting new-cleaning-job event to all clients');
+      req.io.emit('new-cleaning-job', cleaningJob);
     }
     
     // Emit socket events
@@ -390,64 +451,108 @@ router.get('/qr/site', async (req, res) => {
 router.post('/recommend', authorize('admin', 'icu_manager', 'er_staff'), async (req, res) => {
   try {
     const { ward, equipmentType, urgency } = req.body;
-    
+
+    // Trim and validate ward parameter
+    const requestedWard = ward ? ward.trim() : null;
+
+    // Log the recommendation request for debugging
+    console.log(`🔍 Bed Recommendation Request: Ward='${requestedWard || 'Any'}', Equipment='${equipmentType || 'Any'}', Urgency='${urgency || 'normal'}'`);
+
     let recommendedBed = null;
-    
-    // Priority 1: Match both ward AND equipment
-    if (ward && equipmentType) {
-      recommendedBed = await Bed.findOne({ 
-        status: 'available',
-        ward,
-        equipmentType
-      }).sort({ lastUpdated: 1 });
+
+    // If ward is specified (non-empty string), ONLY look for beds in that specific ward
+    if (requestedWard && requestedWard !== '' && requestedWard !== 'Any') {
+      // Priority 1: Match both ward AND equipment
+      if (equipmentType) {
+        recommendedBed = await Bed.findOne({
+          status: 'available',
+          ward: requestedWard,
+          equipmentType
+        }).sort({ lastUpdated: 1 });
+      }
+
+      // Priority 2: Match ward only (any equipment in that ward)
+      if (!recommendedBed) {
+        recommendedBed = await Bed.findOne({
+          status: 'available',
+          ward: requestedWard
+        }).sort({ lastUpdated: 1 });
+      }
+
+      // If no available beds in requested ward, show alternatives from THAT ward only
+      if (!recommendedBed) {
+        const cleaningBeds = await Bed.find({
+          status: 'cleaning',
+          ward: requestedWard
+        }).sort({ lastCleaned: -1 }).limit(5);
+
+        const reservedBeds = await Bed.find({
+          status: 'reserved',
+          ward: requestedWard
+        }).sort({ lastUpdated: 1 }).limit(3);
+
+        console.log(`❌ No available beds in ${requestedWard} ward. Showing ${cleaningBeds.length} cleaning and ${reservedBeds.length} reserved beds from ${requestedWard} only.`);
+
+        return res.status(404).json({
+          error: `No available beds in ${requestedWard} ward`,
+          suggestion: `Check beds under cleaning in ${requestedWard} ward or wait for upcoming availability`,
+          alternatives: {
+            cleaning: cleaningBeds,
+            reserved: reservedBeds
+          },
+          message: `Requested: Ward=${requestedWard}, Equipment=${equipmentType || 'Any'}`
+        });
+      }
+
+      console.log(`✅ Recommended bed: ${recommendedBed.bedNumber} from ${recommendedBed.ward} ward (requested: ${requestedWard})`);
+    } else {
+      // No ward specified (null, empty, or "Any") - can search across all wards
+      console.log(`🔍 No specific ward requested. Searching across all wards...`);
+
+      // Priority 1: Match equipment
+      if (equipmentType) {
+        recommendedBed = await Bed.findOne({
+          status: 'available',
+          equipmentType
+        }).sort({ lastUpdated: 1 });
+      }
+
+      // Priority 2: Any available bed
+      if (!recommendedBed) {
+        recommendedBed = await Bed.findOne({
+          status: 'available'
+        }).sort({ lastUpdated: 1 });
+      }
+
+      // Show alternatives from any ward
+      if (!recommendedBed) {
+        const cleaningBeds = await Bed.find({ status: 'cleaning' })
+          .sort({ lastCleaned: -1 })
+          .limit(5);
+
+        const reservedBeds = await Bed.find({ status: 'reserved' })
+          .sort({ lastUpdated: 1 })
+          .limit(3);
+
+        console.log(`❌ No available beds across all wards. Showing ${cleaningBeds.length} cleaning and ${reservedBeds.length} reserved beds.`);
+
+        return res.status(404).json({
+          error: 'No available beds matching criteria',
+          suggestion: 'Check beds under cleaning or contact wards',
+          alternatives: {
+            cleaning: cleaningBeds,
+            reserved: reservedBeds
+          },
+          message: `Requested: Equipment=${equipmentType || 'Any'}`
+        });
+      }
+
+      console.log(`✅ Recommended bed: ${recommendedBed.bedNumber} from ${recommendedBed.ward} ward (no specific ward requested)`);
     }
-    
-    // Priority 2: Match equipment only
-    if (!recommendedBed && equipmentType) {
-      recommendedBed = await Bed.findOne({ 
-        status: 'available',
-        equipmentType
-      }).sort({ lastUpdated: 1 });
-    }
-    
-    // Priority 3: Match ward only
-    if (!recommendedBed && ward) {
-      recommendedBed = await Bed.findOne({ 
-        status: 'available',
-        ward
-      }).sort({ lastUpdated: 1 });
-    }
-    
-    // Priority 4: Any available bed
-    if (!recommendedBed) {
-      recommendedBed = await Bed.findOne({ 
-        status: 'available'
-      }).sort({ lastUpdated: 1 });
-    }
-    
-    if (!recommendedBed) {
-      const cleaningBeds = await Bed.find({ status: 'cleaning' })
-        .sort({ lastCleaned: -1 })
-        .limit(5);
-      
-      const reservedBeds = await Bed.find({ status: 'reserved' })
-        .sort({ lastUpdated: 1 })
-        .limit(3);
-      
-      return res.status(404).json({ 
-        error: 'No available beds matching criteria',
-        suggestion: 'Check beds under cleaning or contact other wards',
-        alternatives: {
-          cleaning: cleaningBeds,
-          reserved: reservedBeds
-        },
-        message: `Requested: Ward=${ward || 'Any'}, Equipment=${equipmentType || 'Any'}`
-      });
-    }
-    
+
     res.json({
       bed: recommendedBed,
-      matchLevel: getMatchLevel(recommendedBed, ward, equipmentType),
+      matchLevel: getMatchLevel(recommendedBed, requestedWard, equipmentType),
       message: 'Bed recommended based on availability and requirements'
     });
   } catch (error) {

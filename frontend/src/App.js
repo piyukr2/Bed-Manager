@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import io from 'socket.io-client';
-import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import Home from './components/Home';
 import Dashboard from './components/Dashboard';
 import BedGrid from './components/BedGrid';
@@ -12,7 +12,10 @@ import EmergencyAdmission from './components/EmergencyAdmission';
 import Login from './components/Login';
 import CriticalAlertModal from './components/CriticalAlertModal';
 import FloorPlan from './components/FloorPlan';
-import CleaningDashboard from './components/CleaningDashboard';
+import ERStaffDashboard from './components/ERStaffDashboard';
+import ICUManagerDashboard from './components/ICUManagerDashboard';
+import WardStaffDashboard from './components/WardStaffDashboard';
+import AdminDashboard from './components/AdminDashboard';
 import './App.css';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
@@ -21,7 +24,6 @@ const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000';
 let socket;
 
 function App() {
-  const location = useLocation();
   const [showHome, setShowHome] = useState(true);
   const [showLogin, setShowLogin] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
@@ -410,11 +412,6 @@ function App() {
     setCriticalAlerts(prev => prev.slice(1));
   };
 
-  // Route to cleaning dashboard
-  if (location.pathname === '/cleaning-admin') {
-    return <CleaningDashboard />;
-  }
-
   // Show home page
   if (showHome) {
     return (
@@ -449,181 +446,121 @@ function App() {
     );
   }
 
-  // Main dashboard for authenticated users
-  const filteredBeds = selectedWard === 'All' 
-    ? beds 
-    : beds.filter(bed => bed.ward === selectedWard);
+  // Role-based dashboard routing
+  const renderDashboard = () => {
+    const filteredBeds = selectedWard === 'All'
+      ? beds
+      : beds.filter(bed => bed.ward === selectedWard);
 
-  const wards = currentUser.role === 'admin' 
-    ? ['All', ...new Set(beds.map(bed => bed.ward))]
-    : currentUser.ward 
-    ? [currentUser.ward]
-    : ['All', ...new Set(beds.map(bed => bed.ward))];
+    const wards = currentUser.role === 'admin'
+      ? ['All', ...new Set(beds.map(bed => bed.ward))]
+      : currentUser.ward
+      ? [currentUser.ward]
+      : ['All', ...new Set(beds.map(bed => bed.ward))];
 
-  const canAdmitPatients = ['admin', 'icu_manager', 'er_staff'].includes(currentUser.role);
-  const canUpdateBeds = ['admin', 'icu_manager', 'ward_staff'].includes(currentUser.role);
-  const canDischargePatients = ['admin', 'icu_manager', 'ward_staff'].includes(currentUser.role);
+    switch (currentUser.role) {
+      case 'er_staff':
+        return (
+          <ERStaffDashboard
+            currentUser={currentUser}
+            onLogout={handleLogout}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+            socket={socket}
+          />
+        );
+
+      case 'icu_manager':
+        return (
+          <ICUManagerDashboard
+            currentUser={currentUser}
+            onLogout={handleLogout}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+            socket={socket}
+            beds={beds}
+            stats={stats}
+            patients={patients}
+            alerts={alerts}
+            onUpdateBed={updateBedStatus}
+            onEmergencyAdmission={handleEmergencyAdmission}
+            onDischargePatient={dischargePatient}
+            selectedWard={selectedWard}
+            setSelectedWard={setSelectedWard}
+          />
+        );
+
+      case 'ward_staff':
+        return (
+          <WardStaffDashboard
+            currentUser={currentUser}
+            onLogout={handleLogout}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+            socket={socket}
+          />
+        );
+
+      case 'admin':
+        return (
+          <AdminDashboard
+            currentUser={currentUser}
+            onLogout={handleLogout}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+            socket={socket}
+          />
+        );
+
+      default:
+        // Fallback to original dashboard for unknown roles
+        return (
+          <div className="App">
+            <header className="app-header">
+              <div className="header-content">
+                <div className="brand-identity">
+                  <div className="brand-mark">BM</div>
+                  <div className="brand-copy">
+                    <h1>BedManager Command Center</h1>
+                    <p className="subtitle">Hospital occupancy and critical care overview</p>
+                  </div>
+                </div>
+              </div>
+              <div className="header-actions">
+                <div className="user-info">
+                  <span className="user-name">{currentUser.name}</span>
+                  <span className="user-role">({currentUser.role.replace('_', ' ')})</span>
+                </div>
+                <button className="logout-btn" onClick={handleLogout}>
+                  Logout
+                </button>
+                <button
+                  className="theme-toggle"
+                  onClick={toggleTheme}
+                  title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+                >
+                  <span className="theme-icon">
+                    {theme === 'light' ? '🌙' : '☀️'}
+                  </span>
+                </button>
+              </div>
+            </header>
+            <div className="main-content">
+              <p>Dashboard for role '{currentUser.role}' is not configured.</p>
+            </div>
+          </div>
+        );
+    }
+  };
 
   return (
-    <div className="App">
-      <header className="app-header">
-        <div className="header-content">
-          <div className="brand-identity">
-            <div className="brand-mark">BM</div>
-            <div className="brand-copy">
-              <h1>BedManager Command Center</h1>
-              <p className="subtitle">Hospital occupancy and critical care overview</p>
-            </div>
-          </div>
-        </div>
-        <div className="header-actions">
-          {canAdmitPatients && (
-            <button 
-              className="emergency-btn"
-              onClick={() => setShowEmergencyModal(true)}
-            >
-              Emergency Admission
-            </button>
-          )}
-          <div className="user-info">
-            <span className="user-name">{currentUser.name}</span>
-            <span className="user-role">({currentUser.role.replace('_', ' ')})</span>
-            {currentUser.ward && <span className="user-ward">- {currentUser.ward}</span>}
-          </div>
-          <button className="logout-btn" onClick={handleLogout}>
-            Logout
-          </button>
-          <button
-            className="theme-toggle"
-            onClick={toggleTheme}
-            title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-            aria-label="Toggle color theme"
-          >
-            <span className="theme-icon">
-              {theme === 'light' ? '🌙' : '☀️'}
-            </span>
-          </button>
-          <div className={`connection-indicator ${connectionStatus}`} title={`Socket.IO: ${connectionStatus}`}>
-            <span className="indicator-dot" />
-            <span className="indicator-label">{connectionLabel}</span>
-          </div>
-        </div>
-      </header>
-
-      <div className="main-content">
-        <aside className="sidebar">
-          <AlertPanel alerts={alerts} />
-          
-          {wards.length > 1 && (
-            <div className="ward-filter">
-              <h3>Filter by Ward</h3>
-              {wards.map(ward => (
-                <button
-                  key={ward}
-                  className={`ward-btn ${selectedWard === ward ? 'active' : ''}`}
-                  onClick={() => setSelectedWard(ward)}
-                >
-                  {ward}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div className="patients-list">
-            <h3>Current Patients ({patients.length})</h3>
-            <div className="patients-scroll">
-              {patients.length === 0 ? (
-                <div className="no-patients">
-                  <p>No patients admitted</p>
-                </div>
-              ) : (
-                patients.map(patient => (
-                  <div key={patient._id} className="patient-card">
-                    <div className="patient-info">
-                      <strong>{patient.name}</strong>
-                      <span className="patient-id">ID: {patient.patientId}</span>
-                      <span className="patient-bed">Bed: {patient.bedId?.bedNumber || 'N/A'}</span>
-                      <span className="patient-ward">{patient.bedId?.ward || 'N/A'}</span>
-                    </div>
-                    {canDischargePatients && (
-                      <button 
-                        className="discharge-btn"
-                        onClick={() => dischargePatient(patient._id)}
-                      >
-                        Discharge
-                      </button>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </aside>
-
-        <main className="dashboard-main">
-          {stats && <Dashboard stats={stats} />}
-          {stats && <OccupancyChart stats={stats} />}
-          <div className="view-mode-switch">
-            <div className="view-switch-group">
-              <button
-                className={`view-switch ${bedViewMode === 'ward' ? 'active' : ''}`}
-                onClick={() => handleViewModeChange('ward')}
-                title="View beds organized by wards"
-              >
-                🏥 Ward View
-              </button>
-              <button
-                className={`view-switch ${bedViewMode === 'floor' ? 'active' : ''}`}
-                onClick={() => handleViewModeChange('floor')}
-                title="View beds organized by floors"
-              >
-                🏢 Floor View
-              </button>
-              <button
-                className={`view-switch ${bedViewMode === 'grid' ? 'active' : ''}`}
-                onClick={() => handleViewModeChange('grid')}
-                title="Simple grid view of all beds"
-              >
-                📋 Grid View
-              </button>
-            </div>
-          </div>
-          {bedViewMode === 'ward' ? (
-            <WardView 
-              beds={filteredBeds} 
-              onUpdateBed={updateBedStatus}
-              canUpdateBeds={canUpdateBeds}
-            />
-          ) : bedViewMode === 'floor' ? (
-            <FloorPlan
-              beds={filteredBeds}
-              canUpdateBeds={canUpdateBeds}
-              onUpdateBed={updateBedStatus}
-            />
-          ) : (
-            <BedGrid 
-              beds={filteredBeds} 
-              onUpdateBed={updateBedStatus}
-              selectedWard={selectedWard}
-              canUpdateBeds={canUpdateBeds}
-            />
-          )}
-        </main>
-      </div>
-
-      {showEmergencyModal && (
-        <EmergencyAdmission
-          onClose={() => setShowEmergencyModal(false)}
-          onSubmit={handleEmergencyAdmission}
-          wards={wards.filter(w => w !== 'All')}
-        />
-      )}
-
+    <>
+      {renderDashboard()}
       <CriticalAlertModal
         alert={criticalAlerts[0]}
         onDismiss={handleDismissCriticalAlert}
       />
-    </div>
+    </>
   );
 }
 

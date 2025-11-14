@@ -227,6 +227,10 @@ mongoose.connect(MONGODB_URI, {
   
   await createDefaultUsers();
   await createDefaultCleaningStaff();
+
+  // Start scheduled jobs
+  const { startReservationExpiryJob } = require('./jobs/reservationExpiry');
+  startReservationExpiryJob(io);
 })
 .catch(err => {
   console.error('❌ MongoDB connection error:', err.message);
@@ -359,6 +363,7 @@ app.post('/api/auth/login', async (req, res) => {
 const bedRoutes = require('./routes/beds');
 const patientRoutes = require('./routes/patients');
 const alertRoutes = require('./routes/alerts');
+const bedRequestRoutes = require('./routes/bedRequests');
 
 // Socket.IO Connection
 const connectedClients = new Map();
@@ -408,6 +413,11 @@ app.use((req, res, next) => {
 app.use('/api/beds', authenticateToken, bedRoutes);
 app.use('/api/patients', authenticateToken, patientRoutes);
 app.use('/api/alerts', authenticateToken, alertRoutes);
+app.use('/api/bed-requests', authenticateToken, bedRequestRoutes);
+
+// System settings routes
+const systemSettingsRoutes = require('./routes/systemSettings');
+app.use('/api/settings', authenticateToken, systemSettingsRoutes);
 
 // Cleaning management routes
 const cleaningJobRoutes = require('./routes/cleaningJobs');
@@ -575,15 +585,123 @@ app.post('/api/initialize', async (req, res) => {
       await Patient.insertMany(samplePatients);
     }
     
-    io.emit('data-initialized', { 
-      bedsCreated: beds.length,
-      patientsCreated: samplePatients.length 
-    });
-    
-    res.json({ 
-      message: 'Sample data initialized successfully', 
+    // Populate 30 days of historical occupancy data with ward-wise breakdown
+    console.log('📊 Generating 30 days of historical occupancy data...');
+    const OccupancyHistory = require('./models/OccupancyHistory');
+
+    const historicalData = [];
+    const now = new Date();
+    const totalBedsCount = 60; // 15 beds per ward x 4 wards
+    const bedsPerWard = 15;
+    // Reuse the wards array from above
+
+    for (let daysAgo = 30; daysAgo >= 1; daysAgo--) {
+      const timestamp = new Date(now);
+      timestamp.setDate(timestamp.getDate() - daysAgo);
+      timestamp.setHours(12, 0, 0, 0); // Set to noon for each day
+
+      const dayOfWeek = timestamp.getDay(); // 0 = Sunday, 6 = Saturday
+
+      // Generate ward-wise data
+      const wardStats = [];
+      let totalOccupied = 0;
+      let totalAvailable = 0;
+      let totalCleaning = 0;
+      let totalReserved = 0;
+
+      wards.forEach((wardName) => {
+        // Base occupancy with weekly cycle (varies by ward)
+        let baseOccupancy = 0.70 + (Math.sin((daysAgo / 7) * Math.PI) * 0.10);
+
+        // Ward-specific adjustments
+        if (wardName === 'ICU') {
+          baseOccupancy += 0.10; // ICU tends to be busier
+        } else if (wardName === 'Emergency') {
+          baseOccupancy += 0.05; // Emergency also busy
+        } else if (wardName === 'General Ward') {
+          baseOccupancy -= 0.05; // General ward slightly less busy
+        }
+
+        // Weekend effect (lower occupancy on weekends)
+        if (dayOfWeek === 0 || dayOfWeek === 6) {
+          baseOccupancy -= 0.08;
+        }
+
+        // Monday spike (admissions from weekend)
+        if (dayOfWeek === 1) {
+          baseOccupancy += 0.12;
+        }
+
+        // Random events (hospital surges, seasonal patterns)
+        const randomEvent = Math.random();
+        if (randomEvent > 0.92) {
+          baseOccupancy += 0.15 + (Math.random() * 0.10);
+        } else if (randomEvent < 0.05) {
+          baseOccupancy -= 0.10 + (Math.random() * 0.08);
+        }
+
+        // Add daily random variation
+        const dailyVariation = (Math.random() - 0.5) * 0.15;
+
+        // Seasonal trend
+        const monthEffect = Math.sin((daysAgo / 30) * Math.PI) * 0.05;
+
+        const occupancyRate = Math.max(0.45, Math.min(0.98, baseOccupancy + dailyVariation + monthEffect));
+
+        const occupied = Math.floor(bedsPerWard * occupancyRate);
+        const cleaningRate = 0.03 + (Math.random() * 0.04);
+        const cleaning = Math.floor(bedsPerWard * cleaningRate);
+        const reservedRate = 0.02 + (Math.random() * 0.05);
+        const reserved = Math.floor(bedsPerWard * reservedRate);
+        const available = Math.max(0, bedsPerWard - occupied - cleaning - reserved);
+
+        wardStats.push({
+          ward: wardName,
+          total: bedsPerWard,
+          occupied,
+          available,
+          cleaning,
+          reserved,
+          occupancyRate: parseFloat((occupancyRate * 100).toFixed(1))
+        });
+
+        totalOccupied += occupied;
+        totalAvailable += available;
+        totalCleaning += cleaning;
+        totalReserved += reserved;
+      });
+
+      const overallOccupancyRate = parseFloat(((totalOccupied / totalBedsCount) * 100).toFixed(1));
+
+      historicalData.push({
+        timestamp,
+        totalBeds: totalBedsCount,
+        occupied: totalOccupied,
+        available: totalAvailable,
+        cleaning: totalCleaning,
+        reserved: totalReserved,
+        occupancyRate: overallOccupancyRate,
+        wardStats,
+        peakHour: overallOccupancyRate >= 85
+      });
+    }
+
+    if (historicalData.length > 0) {
+      await OccupancyHistory.insertMany(historicalData);
+      console.log(`✅ Created ${historicalData.length} historical occupancy records with ward-wise data`);
+    }
+
+    io.emit('data-initialized', {
       bedsCreated: beds.length,
       patientsCreated: samplePatients.length,
+      historicalRecords: historicalData.length
+    });
+
+    res.json({
+      message: 'Sample data initialized successfully',
+      bedsCreated: beds.length,
+      patientsCreated: samplePatients.length,
+      historicalRecords: historicalData.length,
       usersCount: await User.countDocuments(),
       timestamp: new Date()
     });

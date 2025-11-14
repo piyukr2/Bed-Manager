@@ -69,7 +69,7 @@ router.post('/', async (req, res) => {
     await job.save();
 
     // Emit socket event for real-time notification
-    req.app.get('io').emit('newCleaningJob', job);
+    req.app.get('io').emit('new-cleaning-job', job);
 
     res.status(201).json(job);
   } catch (error) {

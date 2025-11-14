@@ -26,6 +26,7 @@ const WARD_INFO = {
 function WardView({ beds, onUpdateBed, canUpdateBeds }) {
   const [selectedBed, setSelectedBed] = useState(null);
   const [activeWard, setActiveWard] = useState('All wards'); // Default to "All wards"
+  const [expandedWards, setExpandedWards] = useState({}); // Track expanded wards
 
   // Group beds by ward
   const bedsByWard = useMemo(() => {
@@ -62,6 +63,13 @@ function WardView({ beds, onUpdateBed, canUpdateBeds }) {
       await onUpdateBed(selectedBed._id, newStatus);
       setSelectedBed(null);
     }
+  };
+
+  const toggleWardExpand = (ward) => {
+    setExpandedWards(prev => ({
+      ...prev,
+      [ward]: !prev[ward]
+    }));
   };
 
   const getWardStats = (bedsInWard) => {
@@ -163,7 +171,7 @@ function WardView({ beds, onUpdateBed, canUpdateBeds }) {
                 </div>
 
                 <div className="ward-beds-grid">
-                  {wardBeds.map(bed => (
+                  {wardBeds.slice(0, expandedWards[ward] ? wardBeds.length : 6).map(bed => (
                     <div
                       key={bed._id}
                       className={`ward-bed-card status-${bed.status}`}
@@ -201,6 +209,27 @@ function WardView({ beds, onUpdateBed, canUpdateBeds }) {
                     </div>
                   ))}
                 </div>
+
+                {wardBeds.length > 6 && (
+                  <div className="ward-expand-footer">
+                    <button 
+                      className="expand-btn"
+                      onClick={() => toggleWardExpand(ward)}
+                    >
+                      {expandedWards[ward] ? (
+                        <>
+                          <span>Show Less</span>
+                          <span className="expand-icon">↑</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Show {wardBeds.length - 6} More Beds</span>
+                          <span className="expand-icon">↓</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}
